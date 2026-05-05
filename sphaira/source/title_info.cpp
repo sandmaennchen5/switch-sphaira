@@ -2,6 +2,7 @@
 #include "defines.hpp"
 #include "ui/types.hpp"
 #include "log.hpp"
+#include "app.hpp"
 
 #include "yati/nx/ns.hpp"
 #include "yati/nx/nca.hpp"
@@ -17,6 +18,7 @@
 
 #include <nxtc.h>
 #include <minIni.h>
+#include <zlib.h>
 
 namespace sphaira::title {
 namespace {
@@ -132,6 +134,74 @@ Result LoadControlManual(u64 id, NacpStruct& nacp, ThreadResultData* data) {
 
     log_write("\t\t[manual control] time taken: %.2fs %zums\n", ts.GetSecondsD(), ts.GetMs());
     R_SUCCEED();
+}
+
+// libnx 4.7.0 ships a buggy `nacpGetLanguageEntry` / `nsGetApplicationDesiredLanguage`
+// that does NOT honour `nacp.titles_data_format == 1` (HOS 21.0.0+ Switch 2 Edition titles
+// store NacpLanguageEntry[32] DEFLATE-compressed inside `lang_data.compressed_data.buffer`).
+// When format==1 the lang[] union still contains compressed bytes, which the libnx helpers
+// happily return as a "language entry", producing garbage names (often invisible / unrenderable
+// glyphs that look like blank titles in the UI).
+//
+// This helper detects format==1, inflates the compressed payload (raw DEFLATE, wbits=-15),
+// picks the best entry (preferring slot 0, then any non-empty slot), copies it into lang[0],
+// and rewrites `titles_data_format = 0` so the rest of the pipeline (which expects the legacy
+// uncompressed layout) sees a correct entry.
+void NormalizeNacpLangData(NacpStruct& nacp) {
+    if (nacp.titles_data_format != 1) {
+        return;
+    }
+
+    const u16 compressed_size = nacp.lang_data.compressed_data.buffer_size;
+    if (compressed_size == 0 || compressed_size > sizeof(nacp.lang_data.compressed_data.buffer)) {
+        log_write("[NACP] format==1 but compressed_size invalid: %u\n", (unsigned)compressed_size);
+        return;
+    }
+
+    // Decompressed payload is NacpLanguageEntry[32] (~24 KB) which won't fit in the union.
+    // Decompress to a heap buffer and copy a single chosen entry back.
+    static constexpr size_t kDecompressedEntries = 32;
+    auto decompressed = std::make_unique<NacpLanguageEntry[]>(kDecompressedEntries);
+    std::memset(decompressed.get(), 0, sizeof(NacpLanguageEntry) * kDecompressedEntries);
+
+    z_stream zs{};
+    if (inflateInit2(&zs, -15) != Z_OK) {
+        log_write("[NACP] inflateInit2 failed\n");
+        return;
+    }
+    zs.next_in   = nacp.lang_data.compressed_data.buffer;
+    zs.avail_in  = compressed_size;
+    zs.next_out  = reinterpret_cast<Bytef*>(decompressed.get());
+    zs.avail_out = sizeof(NacpLanguageEntry) * kDecompressedEntries;
+    const int rc = inflate(&zs, Z_FINISH);
+    inflateEnd(&zs);
+    if (rc != Z_STREAM_END && rc != Z_OK) {
+        log_write("[NACP] inflate failed: %d\n", rc);
+        return;
+    }
+
+    // Pick best entry: prefer slot 0 if non-empty, else first non-empty.
+    NacpLanguageEntry* chosen = nullptr;
+    if (decompressed[0].name[0] != '\0') {
+        chosen = &decompressed[0];
+    } else {
+        for (size_t i = 1; i < kDecompressedEntries; i++) {
+            if (decompressed[i].name[0] != '\0') {
+                chosen = &decompressed[i];
+                break;
+            }
+        }
+    }
+    if (!chosen) {
+        log_write("[NACP] decompressed but no non-empty entries found\n");
+        return;
+    }
+
+    // Stamp lang[0] with the chosen entry, clear the rest, and downgrade format to legacy
+    // so callers that read lang[] (including nsGetApplicationDesiredLanguage) see a valid name.
+    std::memset(&nacp.lang_data, 0, sizeof(nacp.lang_data));
+    nacp.lang_data.lang[0] = *chosen;
+    nacp.titles_data_format = 0;
 }
 
 ThreadData::ThreadData(bool title_cache) : m_title_cache{title_cache} {
@@ -305,6 +375,10 @@ auto ThreadData::Get(u64 app_id, bool* cached) -> ThreadResultData* {
         if (!has_nacp) {
             FakeNacpEntry(result.get());
         } else {
+            // Decompress lang_data if titles_data_format == 1 (HOS 21+ Switch 2 Edition titles).
+            // Without this, libnx 4.7.0's nsGetApplicationDesiredLanguage returns garbage strings.
+            NormalizeNacpLangData(control->nacp);
+
             bool valid = true;
             NacpLanguageEntry* lang;
             if (R_SUCCEEDED(nsGetApplicationDesiredLanguage(&control->nacp, &lang)) && lang) {
@@ -387,6 +461,17 @@ void ThreadFunc(void* user) {
         log_write("[NXTC] failed to init cache\n");
     }
     ON_SCOPE_EXIT(nxtcExit());
+
+    // One-time cache invalidation: nxtc has no built-in version bump for fork-side fixes,
+    // so use a sentinel ini key. Existing caches may contain garbage names captured before
+    // the format==1 DEFLATE fix; wipe once on first run after upgrade so titles re-fetch.
+    if (data->IsTitleCacheEnabled()) {
+        if (!ini_getbool("cache", "nacp_format1_fix_v1", 0, App::CONFIG_PATH)) {
+            log_write("[NXTC] one-time wipe for format==1 fix\n");
+            nxtcWipeCache();
+            ini_putl("cache", "nacp_format1_fix_v1", 1, App::CONFIG_PATH);
+        }
+    }
 
     while (data->IsRunning()) {
         data->Run();
