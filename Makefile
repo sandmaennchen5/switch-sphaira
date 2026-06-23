@@ -33,7 +33,7 @@ NACPTOOL := $(DEVKITPRO)/tools/bin/nacptool
 # Fork Branding
 APP_NAME    :=  "sphaira (Tomvita's Fork)"
 APP_AUTHOR  :=  "Tomvita"
-APP_VERSION :=  "1.0.0c"
+APP_VERSION :=  "1.0.0d"
 
 # Fetch Git info if available
 GIT_REV		:=	$(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
@@ -95,12 +95,12 @@ DEFINES := $(BASE_DEFINES) -DNDEBUG
 endif
 
 CFLAGS	:=	-g $(OPT) -Wall -Wextra -ffunction-sections -fdata-sections $(ARCH) $(DEFINES) $(INCLUDE) \
-			--embed-dir=$(TOPDIR)/assets/embed --embed-dir=$(TOPDIR)/build/Release/hbl
+			
 CXXFLAGS:=	$(CFLAGS) -fno-rtti -fno-exceptions -std=gnu++26
 
 # Linker flags
 LDFLAGS	:=	-specs=$(DEVKITPRO)/libnx/switch.specs -g $(ARCH) $(OPT) -Wl,--gc-sections -Wl,-Map,$(TARGET).map \
-			--embed-dir=$(TOPDIR)/assets/embed --embed-dir=$(TOPDIR)/build/Release/hbl
+			
 
 # Libraries from build folder
 LIBDIRS	:= -L$(LIBNX)/lib -L$(PORTLIBS)/lib

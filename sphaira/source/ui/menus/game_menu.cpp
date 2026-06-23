@@ -1200,7 +1200,7 @@ Result BuildContentEntry(const NsApplicationContentMetaStatus& status, ContentIn
     }
 
     // append cnmt at the end of the list, following StandardNSP spec.
-    out.content_infos.insert_range(out.content_infos.end(), cnmt_infos);
+    out.content_infos.insert(out.content_infos.end(), cnmt_infos.begin(), cnmt_infos.end());
     out.status = status;
     R_SUCCEED();
 }

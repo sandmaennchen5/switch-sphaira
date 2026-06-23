@@ -1970,7 +1970,7 @@ void Base::Update(Controller* controller, TouchInfo* touch) {
     // basically, inherit all actions from the view, draw them,
     // then restore state after.
     const auto view_actions = view->GetActions();
-    m_actions.insert_range(view_actions);
+    m_actions.insert(view_actions.begin(), view_actions.end());
     ON_SCOPE_EXIT(RemoveActions(view_actions));
 
     MenuBase::Update(controller, touch);
@@ -1980,7 +1980,7 @@ void Base::Update(Controller* controller, TouchInfo* touch) {
 void Base::Draw(NVGcontext* vg, Theme* theme) {
     // see Base::Update().
     const auto view_actions = view->GetActions();
-    m_actions.insert_range(view_actions);
+    m_actions.insert(view_actions.begin(), view_actions.end());
     ON_SCOPE_EXIT(RemoveActions(view_actions));
 
     MenuBase::Draw(vg, theme);

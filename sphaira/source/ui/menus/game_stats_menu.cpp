@@ -6,6 +6,8 @@
 #include <ctime>
 #include <cstdio>
 #include <string>
+#include <algorithm>
+#include <vector>
 
 namespace sphaira::ui::menu::game {
 
@@ -154,82 +156,311 @@ void GameStatsMenu::InitEntries() {
                 std::string user_name = (i < accounts.size()) ? accounts[i].nickname : "Profile " + std::to_string(i + 1);
                 
                 if (m_show_full_history && i < accounts.size()) {
-                    // Raw history investigation: show all events with seconds, raw T0/T1, and unknown fields
-                    s32 total_entries = 0, start_idx = 0, end_idx = 0;
-                    if (R_SUCCEEDED(pdmqryGetAvailableAccountPlayEventRange(accounts[i].uid, &total_entries, &start_idx, &end_idx)) && total_entries > 0) {
-                        
-                        m_entries.emplace_back();
-                        std::string user_header = "  " + user_name + ":";
-                        strncpy(m_entries.back().lang.name, user_header.c_str(), sizeof(m_entries.back().lang.name) - 1);
+                    m_entries.emplace_back();
+                    std::string user_header = "  " + user_name + ":";
+                    strncpy(m_entries.back().lang.name, user_header.c_str(), sizeof(m_entries.back().lang.name) - 1);
 
-                        struct RawEvent {
-                            u64 t0;
-                            u64 t1;
-                            u8 x0[4];
-                            u8 xc[12];
+                    int displayed = 0;
+                    s32 total_entries = 0, start_idx = 0, end_idx = 0;
+                    if (R_SUCCEEDED(pdmqryGetAvailablePlayEventRange(&total_entries, &start_idx, &end_idx)) && total_entries > 0) {
+                        struct GlobalEvent {
+                            int type; // 0: launch, 1: infocus, 2: outfocus, 3: exit, 4: active, 5: inactive
+                            AccountUid uid;
+                            u64 clock_timestamp;
+                            u64 steady_timestamp;
                         };
-                        std::vector<RawEvent> raw_events;
-                        const int chunk_size = 300;
-                        
-                        // Scan entire available range for this user
+                        std::vector<GlobalEvent> global_events;
+                        const int chunk_size = 1000;
                         for (s32 current = start_idx; current < end_idx; current += chunk_size) {
                             s32 to_read = std::min(chunk_size, end_idx - current);
-                            std::vector<PdmAccountPlayEvent> events(to_read);
+                            std::vector<PdmPlayEvent> pdm_events(to_read);
                             s32 actual_read = 0;
-                            
-                            if (R_SUCCEEDED(pdmqryQueryAccountPlayEvent(current, accounts[i].uid, events.data(), to_read, &actual_read))) {
+                            if (R_SUCCEEDED(pdmqryQueryPlayEvent(current, pdm_events.data(), to_read, &actual_read))) {
                                 for (int j = 0; j < actual_read; j++) {
-                                    u64 id1 = ((u64)events[j].application_id[0] << 32) | (u64)events[j].application_id[1];
-                                    u64 id2 = ((u64)events[j].application_id[1] << 32) | (u64)events[j].application_id[0];
-                                    
-                                    if (id1 == m_entry.app_id || id2 == m_entry.app_id) {
-                                        RawEvent re;
-                                        re.t0 = events[j].timestamp0;
-                                        re.t1 = events[j].timestamp1;
-                                        std::memcpy(re.x0, events[j].unk_x0, 4);
-                                        std::memcpy(re.xc, events[j].unk_xc, 12);
-                                        raw_events.push_back(re);
+                                    const auto& pe = pdm_events[j];
+                                    if (pe.play_event_type == PdmPlayEventType_Applet) {
+                                        u64 t1 = ((u64)pe.event_data.applet.program_id[0] << 32) | pe.event_data.applet.program_id[1];
+                                        u64 t2 = ((u64)pe.event_data.applet.program_id[1] << 32) | pe.event_data.applet.program_id[0];
+                                        u64 title_id = (t1 == m_entry.app_id || t2 == m_entry.app_id) ? m_entry.app_id : t1;
+                                        
+                                        if (title_id == m_entry.app_id) {
+                                            int et = -1;
+                                            switch (pe.event_data.applet.event_type) {
+                                                case PdmAppletEventType_Launch: et = 0; break;
+                                                case PdmAppletEventType_InFocus: et = 1; break;
+                                                case PdmAppletEventType_OutOfFocus:
+                                                case PdmAppletEventType_OutOfFocus4: et = 2; break;
+                                                case PdmAppletEventType_Exit:
+                                                case PdmAppletEventType_Exit5:
+                                                case PdmAppletEventType_Exit6: et = 3; break;
+                                            }
+                                            if (et != -1) {
+                                                GlobalEvent ge{};
+                                                ge.type = et;
+                                                ge.clock_timestamp = pe.timestamp_user;
+                                                ge.steady_timestamp = pe.timestamp_steady;
+                                                global_events.push_back(ge);
+                                            }
+                                        }
+                                    } else if (pe.play_event_type == PdmPlayEventType_Account) {
+                                        int et = -1;
+                                        if (pe.event_data.account.type == 0) et = 4;
+                                        else if (pe.event_data.account.type == 1) et = 5;
+                                        
+                                        if (et != -1) {
+                                            GlobalEvent ge{};
+                                            ge.type = et;
+                                            ge.uid.uid[0] = ((u64)pe.event_data.account.uid[0] << 32) | pe.event_data.account.uid[1];
+                                            ge.uid.uid[1] = ((u64)pe.event_data.account.uid[2] << 32) | pe.event_data.account.uid[3];
+                                            ge.clock_timestamp = pe.timestamp_user;
+                                            ge.steady_timestamp = pe.timestamp_steady;
+                                            global_events.push_back(ge);
+                                        }
                                     }
                                 }
                             }
                         }
 
-                        // Show newest first
-                        int displayed = 0;
-                        for (auto it = raw_events.rbegin(); it != raw_events.rend(); ++it) {
-                            time_t t = (time_t)it->t0;
-                            struct tm tm;
-                            localtime_r(&t, &tm);
-                            char time_buf[64];
-                            strftime(time_buf, sizeof(time_buf), "%Y-%m-%d %H:%M:%S", &tm);
+                        auto is_same_uid = [](const AccountUid& a, const AccountUid& b) {
+                            return a.uid[0] == b.uid[0] && a.uid[1] == b.uid[1];
+                        };
 
-                            char x0_str[16];
-                            snprintf(x0_str, sizeof(x0_str), "%02X%02X%02X%02X", it->x0[0], it->x0[1], it->x0[2], it->x0[3]);
-                            
-                            char xc_str[36];
-                            char* p = xc_str;
-                            for(int k=0; k<12; k++) p += snprintf(p, 3, "%02X", it->xc[k]);
+                        auto matches_target_user = [&](const AccountUid& uid) {
+                            if (is_same_uid(uid, accounts[i].uid)) return true;
+                            AccountUid uid_b;
+                            uid_b.uid[0] = ((uid.uid[0] & 0xFFFFFFFF00000000ULL) >> 32) | ((uid.uid[0] & 0x00000000FFFFFFFFULL) << 32);
+                            uid_b.uid[1] = ((uid.uid[1] & 0xFFFFFFFF00000000ULL) >> 32) | ((uid.uid[1] & 0x00000000FFFFFFFFULL) << 32);
+                            return is_same_uid(uid_b, accounts[i].uid);
+                        };
 
-                            char text[256];
-                            snprintf(text, sizeof(text), "    %s | %s | %s", time_buf, xc_str, x0_str);
-                            
+                        struct SessionEvent {
+                            int type; // 0: launch, 1: infocus, 2: outfocus, 3: exit
+                            u64 clock_timestamp;
+                            u64 steady_timestamp;
+                        };
+
+                        struct PlaySession {
+                            u64 start_timestamp;
+                            u64 end_timestamp;
+                            std::vector<SessionEvent> breakdown;
+                            std::vector<AccountUid> active_users;
+                        };
+
+                        std::vector<PlaySession> sessions;
+                        PlaySession current_session{};
+                        bool session_active = false;
+                        AccountUid active_user{};
+                        bool has_active_user = false;
+
+                        for (const auto& ge : global_events) {
+                            if (ge.type == 4) { // active
+                                active_user = ge.uid;
+                                has_active_user = true;
+                                if (session_active) {
+                                    current_session.active_users.push_back(ge.uid);
+                                }
+                            } else if (ge.type == 5) { // inactive
+                                if (has_active_user && (matches_target_user(ge.uid) || is_same_uid(active_user, ge.uid))) {
+                                    has_active_user = false;
+                                }
+                            } else { // applet event
+                                if (ge.type == 0) { // launch
+                                    if (session_active) {
+                                        sessions.push_back(current_session);
+                                    }
+                                    current_session = PlaySession{};
+                                    current_session.start_timestamp = ge.clock_timestamp;
+                                    current_session.end_timestamp = ge.clock_timestamp;
+                                    current_session.breakdown.push_back({0, ge.clock_timestamp, ge.steady_timestamp});
+                                    if (has_active_user) {
+                                        current_session.active_users.push_back(active_user);
+                                    }
+                                    session_active = true;
+                                } else if (session_active) {
+                                    current_session.end_timestamp = ge.clock_timestamp;
+                                    current_session.breakdown.push_back({ge.type, ge.clock_timestamp, ge.steady_timestamp});
+                                    if (ge.type == 3) { // exit
+                                        sessions.push_back(current_session);
+                                        session_active = false;
+                                    }
+                                }
+                            }
+                        }
+                        if (session_active) {
+                            sessions.push_back(current_session);
+                        }
+
+                        std::vector<PlaySession> user_sessions;
+                        for (const auto& s : sessions) {
+                            bool user_match = false;
+                            for (const auto& uid : s.active_users) {
+                                if (matches_target_user(uid)) {
+                                    user_match = true;
+                                    break;
+                                }
+                            }
+                            if (user_match) {
+                                user_sessions.push_back(s);
+                            }
+                        }
+
+                        auto format_duration = [](u64 diff_sec) -> std::string {
+                            u64 hours = diff_sec / 3600;
+                            u64 minutes = (diff_sec / 60) % 60;
+                            u64 seconds = diff_sec % 60;
+                            std::string res;
+                            if (hours > 0) {
+                                res += std::to_string(hours) + "h ";
+                            }
+                            if (minutes > 0 || hours > 0) {
+                                res += std::to_string(minutes) + "m ";
+                            }
+                            res += std::to_string(seconds) + "s";
+                            return res;
+                        };
+
+                        for (auto it = user_sessions.rbegin(); it != user_sessions.rend(); ++it) {
+                            time_t start_time = (time_t)it->start_timestamp;
+                            struct tm tm_start;
+                            localtime_r(&start_time, &tm_start);
+                            char date_buf[64];
+                            strftime(date_buf, sizeof(date_buf), "%Y-%m-%d", &tm_start);
+
+                            u64 session_playtime = 0;
+                            u64 last_in_focus_steady = 0;
+                            bool in_focus = false;
+                            for (const auto& b : it->breakdown) {
+                                if (b.type == 1) { // InFocus
+                                    last_in_focus_steady = b.steady_timestamp;
+                                    in_focus = true;
+                                } else if (b.type == 2 || b.type == 3) { // OutFocus or Exit
+                                    if (in_focus) {
+                                        if (b.steady_timestamp >= last_in_focus_steady) {
+                                            session_playtime += (b.steady_timestamp - last_in_focus_steady);
+                                        }
+                                        in_focus = false;
+                                    }
+                                }
+                            }
+
+                            std::string playtime_str = format_duration(session_playtime);
+                            char header_text[256];
+                            snprintf(header_text, sizeof(header_text), "    %s (Total: %s)", date_buf, playtime_str.c_str());
                             m_entries.emplace_back();
-                            strncpy(m_entries.back().lang.name, text, sizeof(m_entries.back().lang.name) - 1);
-                            
+                            strncpy(m_entries.back().lang.name, header_text, sizeof(m_entries.back().lang.name) - 1);
                             displayed++;
+
+                            u64 last_ts = 0;
+                            for (const auto& b : it->breakdown) {
+                                time_t event_time = (time_t)b.clock_timestamp;
+                                struct tm tm_evt;
+                                localtime_r(&event_time, &tm_evt);
+                                char time_buf[32];
+                                strftime(time_buf, sizeof(time_buf), "%H:%M", &tm_evt);
+
+                                std::string event_str;
+                                bool show_duration = false;
+                                u64 duration = 0;
+
+                                if (b.type == 0) { // Launch
+                                    event_str = "Application Launched";
+                                    last_ts = b.steady_timestamp;
+                                } else if (b.type == 1) { // InFocus
+                                    event_str = "Application Resumed";
+                                    last_ts = b.steady_timestamp;
+                                } else if (b.type == 2) { // OutFocus
+                                    event_str = "Application Suspended";
+                                    show_duration = true;
+                                    duration = (b.steady_timestamp >= last_ts) ? (b.steady_timestamp - last_ts) : 0;
+                                } else if (b.type == 3) { // Exit
+                                    event_str = "Application Closed";
+                                    show_duration = true;
+                                    duration = (b.steady_timestamp >= last_ts) ? (b.steady_timestamp - last_ts) : 0;
+                                }
+
+                                char event_text[256];
+                                if (show_duration) {
+                                    std::string dur_str = format_duration(duration);
+                                    snprintf(event_text, sizeof(event_text), "      %s - %s (%s)", time_buf, event_str.c_str(), dur_str.c_str());
+                                } else {
+                                    snprintf(event_text, sizeof(event_text), "      %s - %s", time_buf, event_str.c_str());
+                                }
+                                
+                                m_entries.emplace_back();
+                                strncpy(m_entries.back().lang.name, event_text, sizeof(m_entries.back().lang.name) - 1);
+                                displayed++;
+                            }
+
                             if (displayed >= 200) break;
                         }
+                    }
 
-                        if (displayed == 0) {
-                            m_entries.emplace_back();
-                            strncpy(m_entries.back().lang.name, "    No raw history logs found.", sizeof(m_entries.back().lang.name) - 1);
+                    if (displayed == 0) {
+                        // Fallback to Account Play Events (query backward to prevent UI freeze and scan efficiently)
+                        s32 acc_total = 0, acc_start = 0, acc_end = 0;
+                        if (R_SUCCEEDED(pdmqryGetAvailableAccountPlayEventRange(accounts[i].uid, &acc_total, &acc_start, &acc_end)) && acc_total > 0) {
+                            std::vector<u64> play_times;
+                            const int chunk_size = 1000;
+                            s32 current = acc_end;
+                            while (current > acc_start && play_times.size() < 200) {
+                                s32 chunk_start = std::max(acc_start, current - chunk_size);
+                                s32 to_read = current - chunk_start;
+                                std::vector<PdmAccountPlayEvent> acc_events(to_read);
+                                s32 actual_read = 0;
+                                if (R_SUCCEEDED(pdmqryQueryAccountPlayEvent(chunk_start, accounts[i].uid, acc_events.data(), to_read, &actual_read))) {
+                                    for (int j = actual_read - 1; j >= 0; j--) {
+                                        const auto& pe = acc_events[j];
+                                        u64 app_id_1 = ((u64)pe.application_id[0] << 32) | pe.application_id[1];
+                                        u64 app_id_2 = ((u64)pe.application_id[1] << 32) | pe.application_id[0];
+                                        if (app_id_1 == m_entry.app_id || app_id_2 == m_entry.app_id) {
+                                            u64 ts = pe.timestamp0 ? pe.timestamp0 : pe.timestamp1;
+                                            if (ts > 0) {
+                                                play_times.push_back(ts);
+                                                if (play_times.size() >= 200) {
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    break;
+                                }
+                                current = chunk_start;
+                            }
+
+                            std::string last_date = "";
+                            for (auto ts : play_times) {
+                                time_t evt_time = (time_t)ts;
+                                struct tm tm_evt;
+                                localtime_r(&evt_time, &tm_evt);
+                                char date_buf[64];
+                                strftime(date_buf, sizeof(date_buf), "%Y-%m-%d", &tm_evt);
+                                char time_buf[32];
+                                strftime(time_buf, sizeof(time_buf), "%H:%M", &tm_evt);
+
+                                if (std::string(date_buf) != last_date) {
+                                    last_date = date_buf;
+                                    char header_text[256];
+                                    snprintf(header_text, sizeof(header_text), "    %s", date_buf);
+                                    m_entries.emplace_back();
+                                    strncpy(m_entries.back().lang.name, header_text, sizeof(m_entries.back().lang.name) - 1);
+                                    displayed++;
+                                }
+
+                                char event_text[256];
+                                snprintf(event_text, sizeof(event_text), "      %s - Played", time_buf);
+                                m_entries.emplace_back();
+                                strncpy(m_entries.back().lang.name, event_text, sizeof(m_entries.back().lang.name) - 1);
+                                displayed++;
+
+                                if (displayed >= 200) break;
+                            }
                         }
-                    } else {
+                    }
+
+                    if (displayed == 0) {
                         m_entries.emplace_back();
-                        std::string user_header = "  " + user_name + ":";
-                        strncpy(m_entries.back().lang.name, user_header.c_str(), sizeof(m_entries.back().lang.name) - 1);
-                        m_entries.emplace_back();
-                        strncpy(m_entries.back().lang.name, "    No history events available.", sizeof(m_entries.back().lang.name) - 1);
+                        strncpy(m_entries.back().lang.name, "    No play history logs found.", sizeof(m_entries.back().lang.name) - 1);
                     }
                 } else {
                     // Existing summary logic
