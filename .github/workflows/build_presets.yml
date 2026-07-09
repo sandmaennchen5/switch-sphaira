@@ -16,10 +16,10 @@ jobs:
         os: [ubuntu-latest]
         preset: [Release]
     runs-on: ${{ matrix.os }}
-    container: devkitpro/devkita64:latest
+    container: devkitpro/devkita64:20251231
 
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@master
 
     # fetch latest cmake
     - uses: lukka/get-cmake@v3.31.6
