@@ -16,13 +16,10 @@ jobs:
         os: [ubuntu-latest]
         preset: [Release]
     runs-on: ${{ matrix.os }}
-    container: devkitpro/devkita64:20251231
+    container: devkitpro/devkita64:20260219
 
     steps:
     - uses: actions/checkout@master
-
-    # fetch latest cmake
-    - uses: lukka/get-cmake@v3.31.6
 
     - name: Configure CMake
       run: cmake --preset ${{ matrix.preset }}
