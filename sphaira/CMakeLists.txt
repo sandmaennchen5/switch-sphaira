@@ -29,6 +29,7 @@ option(ENABLE_DEVOPTAB_WEBDAV "" ON)
 option(ENABLE_DEVOPTAB_SFTP "" OFF)
 
 set(sphaira_VERSION 1.0.0)
+set(sphaira_VERSION_STRING 1.0.0d)
 
 project(sphaira
     VERSION ${sphaira_VERSION}
@@ -61,7 +62,7 @@ execute_process(
 if (DEFINED sphaira_VERSION_OVERRIDE)
     set(sphaira_DISPLAY_VERSION "${sphaira_VERSION_OVERRIDE} [${GIT_COMMIT}]")
 else()
-    set(sphaira_DISPLAY_VERSION "${sphaira_VERSION} [${GIT_COMMIT}]")
+    set(sphaira_DISPLAY_VERSION "${sphaira_VERSION_STRING} [${GIT_COMMIT}]")
 endif()
 
 add_executable(sphaira
@@ -74,6 +75,7 @@ add_executable(sphaira
     source/ui/menus/irs_menu.cpp
     source/ui/menus/main_menu.cpp
     source/ui/menus/menu_base.cpp
+    source/ui/menus/game_stats_menu.cpp
     source/ui/menus/save_menu.cpp
     source/ui/menus/themezer.cpp
     source/ui/menus/ghdl.cpp
@@ -162,7 +164,7 @@ add_executable(sphaira
 )
 
 target_compile_definitions(sphaira PRIVATE
-    -DAPP_VERSION="${sphaira_VERSION}"
+    -DAPP_VERSION="${sphaira_VERSION_STRING}"
     -DAPP_DISPLAY_VERSION="${sphaira_DISPLAY_VERSION}"
     -DCURL_NO_OLDIES=1
     -DDEV_BUILD=$<BOOL:${DEV_BUILD}>
@@ -635,10 +637,10 @@ dkp_add_asset_target(sphaira_romfs ${CMAKE_CURRENT_BINARY_DIR}/romfs)
 add_dependencies(sphaira hbl_nso hbl_npdm)
 
 # set the embed path for assets and hbl
-target_compile_options(sphaira PRIVATE
-    --embed-dir=${CMAKE_SOURCE_DIR}/assets/embed
-    --embed-dir=${CMAKE_BINARY_DIR}/hbl
-)
+# target_compile_options(sphaira PRIVATE
+#     --embed-dir=${CMAKE_SOURCE_DIR}/assets/embed
+#     --embed-dir=${CMAKE_BINARY_DIR}/hbl
+# )
 
 # add nanovg shaders to romfs
 dkp_install_assets(sphaira_romfs
@@ -652,9 +654,9 @@ dkp_install_assets(sphaira_romfs
 # create nacp
 nx_generate_nacp(
     OUTPUT sphaira.nacp
-    NAME ${CMAKE_PROJECT_NAME}
-    AUTHOR TotalJustice
-    VERSION ${sphaira_VERSION}
+    NAME "sphaira (Tomvita's Fork)"
+    AUTHOR Tomvita
+    VERSION ${sphaira_VERSION_STRING}
 )
 
 # create nro
