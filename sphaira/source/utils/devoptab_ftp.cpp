@@ -58,7 +58,7 @@ private:
     static void ftp_parse_mlsd(std::string_view chunk, DirEntries& out);
     static bool ftp_parse_mlist(std::string_view chunk, struct stat* st);
 
-    std::pair<bool, long> ftp_quote(std::span<const std::string> commands, bool is_dir, std::vector<char>* response_data = nullptr);
+    std::pair<bool, long> ftp_quote(std::vector<const std::string> commands, bool is_dir, std::vector<char>* response_data = nullptr);
     int ftp_dirlist(const std::string& path, DirEntries& out);
     int ftp_stat(const std::string& path, struct stat* st, bool is_dir);
     int ftp_remove_file_folder(const std::string& path, bool is_dir);
@@ -237,7 +237,7 @@ void Device::ftp_parse_mlsd(std::string_view chunk, DirEntries& out) {
     }
 }
 
-std::pair<bool, long> Device::ftp_quote(std::span<const std::string> commands, bool is_dir, std::vector<char>* response_data) {
+std::pair<bool, long> Device::ftp_quote(std::vector<const std::string> commands, bool is_dir, std::vector<char>* response_data) {
     const auto url = build_url("/", is_dir);
 
     curl_slist* cmdlist{};
