@@ -1,6 +1,7 @@
 name: build
 
 on:
+  workflow_dispatch: # This enables the manual "Run workflow" button
   push:
     branches-ignore:
       - dev
@@ -16,14 +17,20 @@ jobs:
         os: [ubuntu-latest]
         preset: [Release]
     runs-on: ${{ matrix.os }}
-    container: devkitpro/devkita64:20260219
+    container: devkitpro/devkita64:latest
 
     steps:
-    - uses: actions/checkout@master
+    - uses: actions/checkout@v3
+
+    - name: Fix git safe directory issue
+      run: git config --global --add safe.directory "${GITHUB_WORKSPACE}"
+
+    # fetch latest cmake
+    - uses: lukka/get-cmake@v3.31.6
 
     - name: Configure CMake
       run: cmake --preset ${{ matrix.preset }}
-
+      
     - name: Build
       run: cmake --build --preset ${{ matrix.preset }} --parallel $(nproc)
 

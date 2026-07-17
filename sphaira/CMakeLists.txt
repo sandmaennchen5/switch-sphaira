@@ -75,7 +75,7 @@ add_executable(sphaira
     source/ui/menus/irs_menu.cpp
     source/ui/menus/main_menu.cpp
     source/ui/menus/menu_base.cpp
-    source/ui/menus/game_stats_menu.cpp
+	source/ui/menus/game_stats_menu.cpp
     source/ui/menus/save_menu.cpp
     source/ui/menus/themezer.cpp
     source/ui/menus/ghdl.cpp
@@ -119,6 +119,7 @@ add_executable(sphaira
     source/i18n.cpp
     source/threaded_file_transfer.cpp
     source/title_info.cpp
+    source/titledb.cpp
     source/minizip_helper.cpp
 
     source/utils/utils.cpp
@@ -222,6 +223,9 @@ FetchContent_Declare(libpulsar
 FetchContent_Declare(nanovg
     GIT_REPOSITORY https://github.com/ITotalJustice/nanovg-deko3d.git
     GIT_TAG 845c9fc
+    PATCH_COMMAND ${CMAKE_COMMAND}
+        -DSOURCE_DIR=<SOURCE_DIR>
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/patch_nanovg_romfs.cmake
 )
 
 FetchContent_Declare(stb
@@ -309,9 +313,9 @@ if (ENABLE_LIBUSBDVD)
     FetchContent_Declare(libusbdvd
         GIT_REPOSITORY https://github.com/proconsule/libusbdvd.git
         GIT_TAG 3cb0613
-		PATCH_COMMAND ${CMAKE_COMMAND}
-			-DSOURCE_DIR=<SOURCE_DIR>
-			-P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/apply_patch.cmake
+        PATCH_COMMAND ${CMAKE_COMMAND}
+            -DSOURCE_DIR=<SOURCE_DIR>
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/apply_patch.cmake
     )
 
     FetchContent_MakeAvailable(libusbdvd)
@@ -571,6 +575,11 @@ FetchContent_MakeAvailable(
     dr_libs
 )
 
+# Apply the stb_truetype CFF buffer-size fix to the stb copy that nanovg
+# fetches internally (stb_nanovg). Must run after FetchContent_MakeAvailable
+# so that stb_nanovg_SOURCE_DIR is populated.
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/patch_stbtt.cmake)
+
 add_library(stb INTERFACE)
 target_include_directories(stb INTERFACE ${stb_SOURCE_DIR})
 
@@ -640,10 +649,10 @@ dkp_add_asset_target(sphaira_romfs ${CMAKE_CURRENT_BINARY_DIR}/romfs)
 add_dependencies(sphaira hbl_nso hbl_npdm)
 
 # set the embed path for assets and hbl
-# target_compile_options(sphaira PRIVATE
-#     --embed-dir=${CMAKE_SOURCE_DIR}/assets/embed
-#     --embed-dir=${CMAKE_BINARY_DIR}/hbl
-# )
+target_compile_options(sphaira PRIVATE
+    --embed-dir=${CMAKE_SOURCE_DIR}/assets/embed
+    --embed-dir=${CMAKE_BINARY_DIR}/hbl
+)
 
 # add nanovg shaders to romfs
 dkp_install_assets(sphaira_romfs
@@ -657,8 +666,8 @@ dkp_install_assets(sphaira_romfs
 # create nacp
 nx_generate_nacp(
     OUTPUT sphaira.nacp
-    NAME "sphaira (Tomvita's Fork)"
-    AUTHOR Tomvita
+    NAME ${CMAKE_PROJECT_NAME}
+    AUTHOR sandmaennchen5
     VERSION ${sphaira_VERSION_STRING}
 )
 

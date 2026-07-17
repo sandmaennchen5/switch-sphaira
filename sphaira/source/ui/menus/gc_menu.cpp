@@ -96,7 +96,6 @@ auto GetXciSizeFromRomSize(u8 rom_size) -> s64 {
     return 0;
 }
 
-
 auto GetDumpTypeStr(u8 type) -> const char* {
     switch (type) {
         case DumpFileType_TrimmedXCI:
@@ -1251,7 +1250,7 @@ Result Menu::GcGetSecurityInfo(GameCardSecurityInformation& out) {
         if (R_SUCCEEDED(svcDebugActiveProcess(&handle, pids[i]))) {
             ON_SCOPE_EXIT(svcCloseHandle(handle));
 
-            if (R_FAILED(svcGetDebugEvent(&event_info, handle)) || event_info.type != DebugEventType_CreateProcess || title_id != event_info.info.create_process.program_id) {
+            if (R_FAILED(svcGetDebugEvent(&event_info, handle)) || title_id != event_info.info.create_process.program_id) {
                 continue;
             }
 

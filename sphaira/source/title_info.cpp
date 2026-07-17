@@ -455,12 +455,22 @@ auto ThreadData::Get(u64 app_id, bool* cached) -> ThreadResultData* {
 }
 
 void ThreadFunc(void* user) {
+	log_write_boot("[title] ThreadFunc: start\n");
     auto data = static_cast<ThreadData*>(user);
 
-    if (data->IsTitleCacheEnabled() && !nxtcInitialize()) {
-        log_write("[NXTC] failed to init cache\n");
+    if (data->IsTitleCacheEnabled()) {
+        log_write_boot("[title] ThreadFunc: calling nxtcInitialize\n");
+        if (!nxtcInitialize()) {
+            log_write("[NXTC] failed to init cache\n");
+            log_write_boot("[title] ThreadFunc: nxtcInitialize FAILED\n");
+        } else {
+            log_write_boot("[title] ThreadFunc: nxtcInitialize OK\n");
+        }
+    } else {
+        log_write_boot("[title] ThreadFunc: title cache disabled, skipping nxtcInitialize\n");
     }
     ON_SCOPE_EXIT(nxtcExit());
+	log_write_boot("[title] ThreadFunc: entering run loop\n");
 
     // One-time cache invalidation: nxtc has no built-in version bump for fork-side fixes,
     // so use a sentinel ini key. Existing caches may contain garbage names captured before
@@ -476,6 +486,7 @@ void ThreadFunc(void* user) {
     while (data->IsRunning()) {
         data->Run();
     }
+	log_write_boot("[title] ThreadFunc: exiting\n");
 }
 
 } // namespace

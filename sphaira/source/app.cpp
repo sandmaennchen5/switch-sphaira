@@ -3,6 +3,11 @@
 #include "ui/popup_list.hpp"
 #include "ui/option_box.hpp"
 #include "ui/progress_box.hpp"
+#include <cstdio>
+#include <cstring>
+
+// defined in main.cpp
+extern void boot_log(const char* msg);
 #include "ui/error_box.hpp"
 
 #include "ui/menus/main_menu.hpp"
@@ -27,6 +32,7 @@
 #include "utils/profile.hpp"
 #include "utils/thread.hpp"
 #include "utils/devoptab.hpp"
+#include "titledb.hpp"
 
 #include <nanovg_dk.h>
 #include <minIni.h>
@@ -414,10 +420,12 @@ void LoadThemeInternal(ThemeMeta meta, ThemeData& theme_data, int inherit_level 
     // block inheriting from itself.
     if (inherit_level < inherit_level_max && !meta.inherit.empty() && strcasecmp(meta.inherit, "none") && meta.inherit != meta.ini_path) {
         log_write("inherit is not empty: %s\n", meta.inherit.s);
-        if (R_SUCCEEDED(romfsInit())) {
+        {
+        const Result _rc = romfsInit();
+        if (R_SUCCEEDED(_rc) || _rc == 0x559u) {
             ThemeMeta inherit_meta;
             const auto has_meta = LoadThemeMeta(meta.inherit, inherit_meta);
-            romfsExit();
+            if (R_SUCCEEDED(_rc)) romfsExit();
 
             // base themes do not have a meta
             if (!has_meta) {
@@ -426,6 +434,7 @@ void LoadThemeInternal(ThemeMeta meta, ThemeData& theme_data, int inherit_level 
 
             LoadThemeInternal(inherit_meta, theme_data, inherit_level + 1);
         }
+		}
     }
 
     auto cb = [](const mTCHAR *Section, const mTCHAR *Key, const mTCHAR *Value, void *UserData) -> int {
@@ -447,8 +456,10 @@ void LoadThemeInternal(ThemeMeta meta, ThemeData& theme_data, int inherit_level 
         return 1;
     };
 
-    if (R_SUCCEEDED(romfsInit())) {
-        ON_SCOPE_EXIT(romfsExit());
+    {
+    const Result _rc = romfsInit();
+    if (R_SUCCEEDED(_rc) || _rc == 0x559u) {
+        ON_SCOPE_EXIT( if (R_SUCCEEDED(_rc)) { romfsExit(); } );
 
         if (!ini_browse(cb, &theme_data, meta.ini_path)) {
             log_write("failed to open ini: %s\n", meta.ini_path.s);
@@ -456,6 +467,7 @@ void LoadThemeInternal(ThemeMeta meta, ThemeData& theme_data, int inherit_level 
             log_write("opened ini: %s\n", meta.ini_path.s);
         }
     }
+	}
 }
 
 void nxlink_callback(const NxlinkCallbackData *data) {
@@ -1344,8 +1356,10 @@ void App::LoadTheme(const ThemeMeta& meta) {
     LoadThemeInternal(meta, theme_data);
     m_theme.meta = meta;
 
-    if (R_SUCCEEDED(romfsInit())) {
-        ON_SCOPE_EXIT(romfsExit());
+    {
+    const Result _rc = romfsInit();
+    if (R_SUCCEEDED(_rc) || _rc == 0x559u) {
+        ON_SCOPE_EXIT( if (R_SUCCEEDED(_rc)) { romfsExit(); } );
 
         // load all assets / colours.
         for (auto& e : THEME_ENTRIES) {
@@ -1356,6 +1370,7 @@ void App::LoadTheme(const ThemeMeta& meta) {
         m_theme.music_path = theme_data.music_path;
         LoadAndPlayThemeMusic();
     }
+	}
 }
 
 // todo: only use opendir on if romfs, otherwise use native fs
@@ -1392,9 +1407,12 @@ void App::ScanThemes(const std::string& path) {
 
 void App::ScanThemeEntries() {
     // load from romfs first
-    if (R_SUCCEEDED(romfsInit())) {
+    {
+    const Result _rc = romfsInit();
+    if (R_SUCCEEDED(_rc) || _rc == 0x559u) {
         ScanThemes("romfs:/themes/");
-        romfsExit();
+        if (R_SUCCEEDED(_rc)) romfsExit();
+    }
     }
 
     // then load custom entries
@@ -1470,6 +1488,7 @@ Result App::GetEmmcSize(s64* free, s64* total) {
 }
 
 App::App(const char* argv0) {
+	boot_log("App ctor start");
     // boost mode is enabled in userAppInit().
     ON_SCOPE_EXIT(App::SetBoostMode(false));
     SCOPED_TIMESTAMP("App Constructor");
@@ -1477,7 +1496,6 @@ App::App(const char* argv0) {
     g_app = this;
     m_start_timestamp = armGetSystemTick();
     if (!std::strncmp(argv0, "sdmc:/", 6)) {
-        // memmove(path, path + 5, strlen(path)-5);
         std::strncpy(m_app_path, argv0 + 5, std::strlen(argv0)-5);
     } else {
         m_app_path = argv0;
@@ -1487,7 +1505,7 @@ App::App(const char* argv0) {
     if (IsHbmenu()) {
         __nx_applet_exit_mode = 1;
     }
-
+    boot_log("App ctor: creating FsNativeSd");
     // init fs for app use.
     m_fs = std::make_shared<fs::FsNativeSd>(true);
 
@@ -1582,6 +1600,7 @@ App::App(const char* argv0) {
     // load all configs ahead of time, as this is actually faster than
     // loading each config one by one as it avoids re-opening the file multiple times.
     {
+        boot_log("App ctor: loading config ini");
         SCOPED_TIMESTAMP("config init");
         ini_browse(cb, this, CONFIG_PATH);
     }
@@ -1591,7 +1610,7 @@ App::App(const char* argv0) {
         log_write("hello world v%s\n", APP_DISPLAY_VERSION);
     }
 
-    // anything that can be async loaded should be placed in here in order
+    boot_log("App ctor: starting async_init thread");
     // to halve load times.
     // rules:
     // - 1: cannot use romfs as its not thread-safe.
@@ -1599,10 +1618,9 @@ App::App(const char* argv0) {
     // - 3: cannot be too slow that async takes longer than the main thread (ie, balance the load).
     // currrent load time is 60ms without logs, 90 with (down from 230ms).
     utils::Async async_init([this](){
-        SCOPED_TIMESTAMP("App async load");
+        boot_log("async: start");
 
         {
-            SCOPED_TIMESTAMP("config directory init");
             m_fs->CreateDirectoryRecursively("/config/sphaira");
             m_fs->CreateDirectory("/config/sphaira/assoc");
             m_fs->CreateDirectory("/config/sphaira/themes");
@@ -1612,10 +1630,8 @@ App::App(const char* argv0) {
         }
 
         {
-            // delete old cached folders/files on startup.
-            SCOPED_TIMESTAMP("old cache delete");
-            m_fs->DeleteDirectoryRecursively("/switch/sphaira/cache/themezer"); // themezer icon/json cache.
-            m_fs->DeleteFile("/switch/sphaira/cache/cache.json"); // old etag cache.
+            m_fs->DeleteDirectoryRecursively("/switch/sphaira/cache/themezer");
+            m_fs->DeleteFile("/switch/sphaira/cache/cache.json");
         }
 
         if (log_is_init()) {
@@ -1647,8 +1663,8 @@ App::App(const char* argv0) {
         }
 
         // get emummc config.
+		boot_log("async: before svcCallSecureMonitor");
         {
-            SCOPED_TIMESTAMP("emummc detect init");
             alignas(0x1000) AmsEmummcPaths paths{};
             SecmonArgs args{};
             args.X[0] = 0xF0000404; /* smcAmsGetEmunandConfig */
@@ -1656,22 +1672,19 @@ App::App(const char* argv0) {
             args.X[2] = (u64)&paths; /* out path */
             svcCallSecureMonitor(&args);
             m_emummc_paths = paths;
-
             log_write("[emummc] enabled: %u\n", App::IsEmummc());
-            if (App::IsEmummc()) {
-                log_write("[emummc] file based path: %s\n", m_emummc_paths.file_based_path);
-                log_write("[emummc] nintendo path: %s\n", m_emummc_paths.nintendo);
-            }
         }
+		boot_log("async: after svcCallSecureMonitor");
 
-        devoptab::FixDkpBug();
+        boot_log("async: devoptab::FixDkpBug");
+		devoptab::FixDkpBug();
 
 #ifdef ENABLE_LIBHAZE
         if (App::GetMtpEnable()) {
-            SCOPED_TIMESTAMP("mtp init");
+            boot_log("async: mtp init");
             libhaze::Init();
         }
-#endif // ENABLE_LIBHAZE
+#endif
 
 #ifdef ENABLE_FTPSRV
         if (App::GetFtpEnable()) {
@@ -1681,82 +1694,49 @@ App::App(const char* argv0) {
 #endif // ENABLE_FTPSRV
 
         if (App::GetNxlinkEnable()) {
-            SCOPED_TIMESTAMP("nxlink init");
             nxlinkInitialize(nxlink_callback);
         }
 
 #ifdef ENABLE_LIBUSBHSFS
         if (App::GetHddEnable()) {
-            SCOPED_TIMESTAMP("hdd init");
             if (App::GetWriteProtect()) {
                 usbHsFsSetFileSystemMountFlags(UsbHsFsMountFlags_ReadOnly);
             }
-
             usbHsFsInitialize(1);
         }
-#endif // ENABLE_LIBUSBHSFS
+#endif
 
 #ifdef ENABLE_LIBUSBDVD
-        {
-            SCOPED_TIMESTAMP("usbdvd init");
-            if (R_FAILED(usbdvd::MountAll())) {
-                log_write("[USBDVD] failed to mount\n");
-            }
+        boot_log("async: usbdvd::MountAll");
+        if (R_FAILED(usbdvd::MountAll())) {
+            boot_log("async: usbdvd::MountAll failed");
         }
-#endif // ENABLE_LIBUSBDVD
+		boot_log("async: usbdvd done");
+#endif
 
-        {
-            SCOPED_TIMESTAMP("curl init");
-            curl::Init();
-        }
-
-        // this has to come after curl init as it inits curl global.
-        {
-            SCOPED_TIMESTAMP("vfs init");
-            devoptab::MountVfsAll();
-        }
+        boot_log("async: curl::Init");
+        curl::Init();
+        boot_log("async: devoptab mounts");
+        devoptab::MountVfsAll();
 
         #ifdef ENABLE_DEVOPTAB_HTTP
-        {
-            SCOPED_TIMESTAMP("http init");
-            devoptab::MountHttpAll();
-        }
-        #endif // ENABLE_DEVOPTAB_HTTP
-
+        devoptab::MountHttpAll();
+        #endif
         #ifdef ENABLE_DEVOPTAB_WEBDAV
-        {
-            SCOPED_TIMESTAMP("webdav init");
-            devoptab::MountWebdavAll();
-        }
-        #endif // ENABLE_DEVOPTAB_WEBDAV
-
+        devoptab::MountWebdavAll();
+        #endif
         #ifdef ENABLE_DEVOPTAB_FTP
-        {
-            SCOPED_TIMESTAMP("ftp init");
-            devoptab::MountFtpAll();
-        }
-        #endif // ENABLE_DEVOPTAB_FTP
-
+        devoptab::MountFtpAll();
+        #endif
         #ifdef ENABLE_DEVOPTAB_SFTP
-        {
-            SCOPED_TIMESTAMP("sftp init");
-            devoptab::MountSftpAll();
-        }
-        #endif // ENABLE_DEVOPTAB_SFTP
-
+        devoptab::MountSftpAll();
+        #endif
         #ifdef ENABLE_DEVOPTAB_NFS
-        {
-            SCOPED_TIMESTAMP("nfs init");
-            devoptab::MountNfsAll();
-        }
-        #endif // ENABLE_DEVOPTAB_NFS
-
+        devoptab::MountNfsAll();
+        #endif
         #ifdef ENABLE_DEVOPTAB_SMB2
-        {
-            SCOPED_TIMESTAMP("smb init");
-            devoptab::MountSmb2All();
-        }
-        #endif // ENABLE_DEVOPTAB_SMB2
+        devoptab::MountSmb2All();
+        #endif
 
         {
             SCOPED_TIMESTAMP("game init");
@@ -1778,22 +1758,29 @@ App::App(const char* argv0) {
             // ini_putl(GetExePath(), "timestamp", m_start_timestamp, App::PLAYLOG_PATH);
         }
 
+        boot_log("async: game/fatfs/mounts");
         {
-            SCOPED_TIMESTAMP("HID init");
+            devoptab::MountGameAll();
+        }
+        {
+            devoptab::MountFatfsAll();
+        }
+        {
+            devoptab::MountInternalMounts();
+        }
+
+        boot_log("async: HID init");
+        {
             hidInitializeTouchScreen();
             hidInitializeGesture();
             hidInitializeKeyboard();
             hidInitializeMouse();
-
             padConfigureInput(8, HidNpadStyleSet_NpadStandard);
-            // padInitializeDefault(&m_pad);
             padInitializeAny(&m_pad);
-
             m_keyboard.Init(KEYBOARD_BUTTON_MAP);
         }
 
         {
-            SCOPED_TIMESTAMP("loader init");
             const auto loader_info_size = envGetLoaderInfoSize();
             if (loader_info_size) {
                 if (loader_info_size >= 8 && !std::memcmp(envGetLoaderInfo(), "sphaira", 7)) {
@@ -1806,10 +1793,12 @@ App::App(const char* argv0) {
                 log_write("not launching from forwarder\n");
             }
         }
+		boot_log("async: done");
     });
 
     {
         SCOPED_TIMESTAMP("i18n init");
+		boot_log("App ctor: i18n init");
         i18n::init(GetLanguage());
     }
 
@@ -1820,7 +1809,6 @@ App::App(const char* argv0) {
 #ifdef USE_NVJPG
     {
         SCOPED_TIMESTAMP("nvjpg init");
-        // this has to be init before deko3d.
         nj::initialize();
         m_decoder.initialize();
     }
@@ -1829,76 +1817,165 @@ App::App(const char* argv0) {
     // get current size of the framebuffer
     {
         SCOPED_TIMESTAMP("nvg init");
+		boot_log("App ctor: nvg/deko3d init");
         const auto fb = GetFrameBufferSize();
         s_width = fb.size.x;
         s_height = fb.size.y;
         m_scale = fb.scale;
 
         // Create the deko3d device
+		boot_log("App ctor: dk::DeviceMaker create");
         this->device = dk::DeviceMaker{}
             .setCbDebug(deko3d_error_cb)
             .create();
 
         // Create the main queue
+		boot_log("App ctor: dk::QueueMaker create");
         this->queue = dk::QueueMaker{this->device}
             .setFlags(DkQueueFlags_Graphics)
             .create();
 
         // Create the memory pools
+		boot_log("App ctor: creating memory pools");
         this->pool_images.emplace(device, DkMemBlockFlags_GpuCached | DkMemBlockFlags_Image, 16*1024*1024);
         this->pool_code.emplace(device, DkMemBlockFlags_CpuUncached | DkMemBlockFlags_GpuCached | DkMemBlockFlags_Code, 128*1024);
         this->pool_data.emplace(device, DkMemBlockFlags_CpuUncached | DkMemBlockFlags_GpuCached, 1*1024*1024);
 
         // Create the static command buffer and feed it freshly allocated memory
-        this->cmdbuf = dk::CmdBufMaker{this->device}.create();
+        boot_log("App ctor: creating cmdbuf + framebuffers");
+		this->cmdbuf = dk::CmdBufMaker{this->device}.create();
         const CMemPool::Handle cmdmem = this->pool_data->allocate(this->StaticCmdSize);
         this->cmdbuf.addMemory(cmdmem.getMemBlock(), cmdmem.getOffset(), cmdmem.getSize());
 
         // Create the framebuffer resources
         this->createFramebufferResources();
 
-        this->renderer.emplace(s_width, s_height, this->device, this->queue, *this->pool_images, *this->pool_code, *this->pool_data);
+        boot_log("App ctor: creating renderer + nvg");
+		this->renderer.emplace(s_width, s_height, this->device, this->queue, *this->pool_images, *this->pool_code, *this->pool_data);
         this->vg = nvgCreateDk(&*this->renderer, NVG_ANTIALIAS | NVG_STENCIL_STROKES);
+		boot_log("App ctor: nvg/deko3d done");
     }
 
     // not sure if these are meant to be deleted or not...
     {
-        SCOPED_TIMESTAMP("font init");
-        PlFontData font_standard, font_extended, font_lang;
-        plGetSharedFontByType(&font_standard, PlSharedFontType_Standard);
-        plGetSharedFontByType(&font_extended, PlSharedFontType_NintendoExt);
+        boot_log("App ctor: font init [build-v5]");
+		SCOPED_TIMESTAMP("font init");
 
-        auto standard_font = nvgCreateFontMem(this->vg, "Standard", (unsigned char*)font_standard.address, font_standard.size, 0);
-        auto extended_font = nvgCreateFontMem(this->vg, "Extended", (unsigned char*)font_extended.address, font_extended.size, 0);
-        nvgAddFallbackFontId(this->vg, standard_font, extended_font);
+        if (!this->vg) {
+            boot_log("font: SKIPPED all (vg is null)");
+        } else {
+            PlFontData font_standard{}, font_extended{}, font_lang{};
 
-        constexpr PlSharedFontType lang_font[] = {
-            PlSharedFontType_ChineseSimplified,
-            PlSharedFontType_ExtChineseSimplified,
-            PlSharedFontType_ChineseTraditional,
-            PlSharedFontType_KO,
-        };
+            boot_log("font: plGetSharedFontByType Standard");
+            Result rc_std = plGetSharedFontByType(&font_standard, PlSharedFontType_Standard);
+            boot_log("font: plGetSharedFontByType NintendoExt");
+            Result rc_ext = plGetSharedFontByType(&font_extended, PlSharedFontType_NintendoExt);
 
-        for (auto type : lang_font) {
-            if (R_SUCCEEDED(plGetSharedFontByType(&font_lang, type))) {
-                char name[32];
-                std::snprintf(name, sizeof(name), "Lang_%u", font_lang.type);
-                auto lang_font = nvgCreateFontMem(this->vg, name, (unsigned char*)font_lang.address, font_lang.size, 0);
-                nvgAddFallbackFontId(this->vg, standard_font, lang_font);
-            } else {
-                log_write("failed plGetSharedFontByType(%d)\n", type);
+            // Log what we got so we can see if address is null
+            {
+                char buf[128];
+                std::snprintf(buf, sizeof(buf), "font std: rc=0x%x addr=%p size=%u",
+                    rc_std, font_standard.address, font_standard.size);
+                boot_log(buf);
+                std::snprintf(buf, sizeof(buf), "font ext: rc=0x%x addr=%p size=%u",
+                    rc_ext, font_extended.address, font_extended.size);
+                boot_log(buf);
             }
+
+            // Nintendo Switch shared font memory is mapped to exactly the font size with
+            // no trailing guard page. stb_truetype's CFF parser sets a 512MB virtual
+            // buffer window over the font data, bypassing the per-byte EOF check in
+            // stbtt__buf_get8. For large CFF fonts whose CFF table runs right to the
+            // end of the mapping, the parser's cursor can advance past the mapped region,
+            // hitting an unmapped page and causing a hard data abort inside nvgCreateFontMem.
+            //
+            // Fix: copy each font into a calloc'd buffer (zero-initialised past the end)
+            // and hand ownership to NanoVG (freeData=1). stb_truetype then reads harmless
+            // zero bytes instead of unmapped memory.
+            constexpr std::size_t FONT_COPY_PAD = 64;
+
+            // Guard against null — a null address will crash nvgCreateFontMem
+            int standard_font = -1, extended_font = -1;
+            if (R_SUCCEEDED(rc_std) && font_standard.address && font_standard.size) {
+                boot_log("font: nvgCreateFontMem Standard");
+                auto* copy = static_cast<unsigned char*>(calloc(1, font_standard.size + FONT_COPY_PAD));
+                if (copy) {
+                    boot_log("font: calloc ok");
+                    std::memcpy(copy, font_standard.address, font_standard.size);
+                    boot_log("font: memcpy done");
+                    {
+                        char hex[64];
+                        std::snprintf(hex, sizeof(hex), "font[0..7]: %02x %02x %02x %02x %02x %02x %02x %02x",
+                            copy[0], copy[1], copy[2], copy[3],
+                            copy[4], copy[5], copy[6], copy[7]);
+                        boot_log(hex);
+                    }
+                    boot_log("font: calling nvgCreateFontMem");
+                    standard_font = nvgCreateFontMem(this->vg, "Standard", copy, static_cast<int>(font_standard.size), 1);
+                    char buf[64];
+                    std::snprintf(buf, sizeof(buf), "font: Standard result=%d", standard_font);
+                    boot_log(buf);
+                } else {
+                    boot_log("font: FAILED to alloc Standard copy");
+                }
+            } else {
+                boot_log("font: SKIPPED Standard (null/failed)");
+            }
+            if (R_SUCCEEDED(rc_ext) && font_extended.address && font_extended.size) {
+                boot_log("font: nvgCreateFontMem Extended");
+                auto* copy = static_cast<unsigned char*>(calloc(1, font_extended.size + FONT_COPY_PAD));
+                if (copy) {
+                    std::memcpy(copy, font_extended.address, font_extended.size);
+                    extended_font = nvgCreateFontMem(this->vg, "Extended", copy, static_cast<int>(font_extended.size), 1);
+                    char buf[64];
+                    std::snprintf(buf, sizeof(buf), "font: Extended result=%d", extended_font);
+                    boot_log(buf);
+                } else {
+                    boot_log("font: FAILED to alloc Extended copy");
+                }
+            } else {
+                boot_log("font: SKIPPED Extended (null/failed)");
+            }
+            if (standard_font >= 0 && extended_font >= 0) {
+                nvgAddFallbackFontId(this->vg, standard_font, extended_font);
+            }
+
+            constexpr PlSharedFontType lang_font[] = {
+                PlSharedFontType_ChineseSimplified,
+                PlSharedFontType_ExtChineseSimplified,
+                PlSharedFontType_ChineseTraditional,
+                PlSharedFontType_KO,
+            };
+
+            boot_log("font: loading lang fonts");
+            for (auto type : lang_font) {
+                if (standard_font >= 0 && R_SUCCEEDED(plGetSharedFontByType(&font_lang, type)) && font_lang.address && font_lang.size) {
+                    char name[32];
+                    std::snprintf(name, sizeof(name), "Lang_%u", font_lang.type);
+                    auto* copy = static_cast<unsigned char*>(calloc(1, font_lang.size + FONT_COPY_PAD));
+                    if (copy) {
+                        std::memcpy(copy, font_lang.address, font_lang.size);
+                        auto lf = nvgCreateFontMem(this->vg, name, copy, static_cast<int>(font_lang.size), 1);
+                        nvgAddFallbackFontId(this->vg, standard_font, lf);
+                    }
+                } else {
+                    log_write("failed plGetSharedFontByType(%d)\n", type);
+                }
+            }
+            boot_log("App ctor: font init done");
         }
     }
 
     {
-        SCOPED_TIMESTAMP("hook init");
+        boot_log("App ctor: applet hook init");
+		SCOPED_TIMESTAMP("hook init");
         appletHook(&m_appletHookCookie, appplet_hook_calback, this);
     }
 
     // load default image
     {
-        SCOPED_TIMESTAMP("load default image");
+        boot_log("App ctor: load default image");
+		SCOPED_TIMESTAMP("load default image");
         m_default_image = nvgCreateImageMem(vg, 0, DEFAULT_IMAGE_DATA, std::size(DEFAULT_IMAGE_DATA));
     }
 
@@ -1907,27 +1984,32 @@ App::App(const char* argv0) {
     if (IsAppletWithSuspendedApp()) {
         App::Notify("Audio disabled due to suspended game"_i18n);
     } else {
-        SCOPED_TIMESTAMP("audio init");
+        boot_log("App ctor: audio init");
+		SCOPED_TIMESTAMP("audio init");
         if (R_FAILED(audio::Init())) {
             log_write("[AUDIO] failed to init\n");
         }
     }
 
     {
-        SCOPED_TIMESTAMP("theme init");
+        boot_log("App ctor: theme init");
+		SCOPED_TIMESTAMP("theme init");
         ScanThemeEntries();
 
         // try and load previous theme, default to previous version otherwise.
         fs::FsPath theme_path = m_theme_path.Get();
         ThemeMeta theme_meta;
-        if (R_SUCCEEDED(romfsInit())) {
-            ON_SCOPE_EXIT(romfsExit());
+        {
+        const Result _rc = romfsInit();
+        if (R_SUCCEEDED(_rc) || _rc == 0x559u) {
+            ON_SCOPE_EXIT( if (R_SUCCEEDED(_rc)) { romfsExit(); } );
             if (!LoadThemeMeta(theme_path, theme_meta)) {
                 log_write("failed to load meta using default\n");
                 theme_path = DEFAULT_THEME_PATH;
                 LoadThemeMeta(theme_path, theme_meta);
             }
         }
+		}
         log_write("loading theme from: %s\n", theme_meta.ini_path.s);
         LoadTheme(theme_meta);
 
@@ -1939,6 +2021,7 @@ App::App(const char* argv0) {
             }
         }
     }
+	boot_log("App ctor done");
 }
 
 void App::PlaySoundEffect(SoundEffect effect) {
@@ -2652,7 +2735,8 @@ App::~App() {
     // boost mode is disabled in userAppExit().
     App::SetBoostMode(true);
 
-    log_write("starting to exit\n");
+    boot_log("App dtor start");
+	log_write("starting to exit\n");
     {
         SCOPED_TIMESTAMP("TOTAL EXIT");
         appletUnhook(&m_appletHookCookie);
@@ -2660,12 +2744,14 @@ App::~App() {
         // async exit as these threads sleep every 100ms.
         {
             SCOPED_TIMESTAMP("async signal");
+			boot_log("App dtor: ExitSignal phase");
 #ifdef ENABLE_FTPSRV
             ftpsrv::ExitSignal();
 #endif // ENABLE_FTPSRV
             nxlinkSignalExit();
             audio::ExitSignal();
             curl::ExitSignal();
+			boot_log("App dtor: ExitSignal done");
         }
 
         // this has to be called before any cleanup to ensure the lifetime of
@@ -2673,20 +2759,32 @@ App::~App() {
         // clear in reverse order as the widgets are a stack.
         {
             SCOPED_TIMESTAMP("widget exit");
+			boot_log("App dtor: widget teardown");
             while (!m_widgets.empty()) {
                 m_widgets.pop_back();
             }
+            boot_log("App dtor: widget teardown done");
+        }
+
+        // Close the background music song on the main thread before launching
+        // async_exit, so the async lambda never needs to touch m_* members.
+        {
+            boot_log("App dtor: audio::CloseSong");
+            audio::CloseSong(&m_background_music);
         }
 
         utils::Async async_exit([this](){
-            {
+            log_write_boot("async_exit: start");
+			{
                 SCOPED_TIMESTAMP("i18n_exit");
+				log_write_boot("async_exit: i18n::exit");
                 i18n::exit();
             }
 
 #ifdef ENABLE_LIBUSBDVD
             {
                 SCOPED_TIMESTAMP("usbdvd_exit");
+				log_write_boot("async_exit: usbdvd::UnmountAll");
                 usbdvd::UnmountAll();
             }
 #endif // ENABLE_LIBUSBDVD
@@ -2694,6 +2792,7 @@ App::~App() {
 #ifdef ENABLE_LIBHAZE
             {
                 SCOPED_TIMESTAMP("mtp exit");
+				log_write_boot("async_exit: libhaze::Exit");
                 libhaze::Exit();
             }
 #endif // ENABLE_LIBHAZE
@@ -2701,6 +2800,7 @@ App::~App() {
 #ifdef ENABLE_LIBUSBHSFS
             {
                 SCOPED_TIMESTAMP("hdd exit");
+				log_write_boot("async_exit: usbHsFsExit");
                 usbHsFsExit();
             }
 #endif // ENABLE_LIBUSBHSFS
@@ -2708,48 +2808,63 @@ App::~App() {
             // this has to come before curl exit as it uses curl global.
             {
                 SCOPED_TIMESTAMP("devoptab exit");
+				log_write_boot("async_exit: devoptab::UmountAllNeworkDevices");
                 devoptab::UmountAllNeworkDevices();
+            }
+
+            // join the titledb background parse thread before curl and audio exit.
+            {
+                SCOPED_TIMESTAMP("titledb_exit");
+                log_write_boot("async_exit: titledb::Exit");
+                titledb::Exit();
             }
 
             // do these last as they were signalled to exit.
             {
                 SCOPED_TIMESTAMP("audio_exit");
-                audio::CloseSong(&m_background_music);
+                log_write_boot("async_exit: audio::Exit");
                 audio::Exit();
             }
 
 #ifdef ENABLE_FTPSRV
             {
                 SCOPED_TIMESTAMP("ftp exit");
+				log_write_boot("async_exit: ftpsrv::Exit");
                 ftpsrv::Exit();
             }
 #endif // ENABLE_FTPSRV
 
             {
                 SCOPED_TIMESTAMP("nxlink exit");
+				log_write_boot("async_exit: nxlinkExit");
                 nxlinkExit();
             }
 
             {
                 SCOPED_TIMESTAMP("curl_exit");
+				log_write_boot("async_exit: curl::Exit");
                 curl::Exit();
             }
+			log_write_boot("async_exit: done");
         });
 
         // do not async close theme as it frees textures.
         {
             SCOPED_TIMESTAMP("theme exit");
+			boot_log("App dtor: CloseTheme");
             ini_puts("config", "theme", m_theme.meta.ini_path, CONFIG_PATH);
             CloseTheme();
         }
 
         {
             SCOPED_TIMESTAMP("destroy frame buffer resources");
+			boot_log("App dtor: destroyFramebufferResources");
             this->destroyFramebufferResources();
         }
 
         {
             SCOPED_TIMESTAMP("nvg exit");
+			boot_log("App dtor: nvgDeleteDk");
             nvgDeleteImage(vg, m_default_image);
             nvgDeleteDk(this->vg);
             this->renderer.reset();
